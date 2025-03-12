@@ -1,5 +1,5 @@
 """
-A Python package for retrieving historical weather data from the National Weather Service API.
+MeriWeather: A Python package for retrieving historical weather data from the National Weather Service API.
 """
 
 from .api import find_stations, get_historical_observations

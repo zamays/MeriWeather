@@ -8,7 +8,7 @@ setup(
         "requests>=2.25.0",
     ],
     author="Zachary Mays",
-    author_email="zachary.a.mays@gmail.com",
+    author_email="epoxy-zaniest.9j@icloud.com",
     description="A package for retrieving historical weather data from the National Weather Service API",
     keywords="weather, nws, api, climate",
     url="https://github.com/zamays/Meriweather",

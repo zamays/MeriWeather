@@ -59,6 +59,32 @@ def save_to_csv(data, station_id):
         return None
 
 def get_data_filepath(station_id, timestamp=None):
-    """Generate a standardized filepath for weather data."""
-    # Implementation to create consistent file paths
-    pass
+    """
+    Generate a standardized filepath for weather data.
+    
+    Args:
+        station_id (str): Station identifier to use in the filename
+        timestamp (datetime, optional): Timestamp to include in filename.
+                                        If None, current UTC time is used.
+    
+    Returns:
+        str: Standardized filepath for the weather data file
+    """
+    from datetime import datetime, timezone
+    import os
+    
+    # Create output directory if it doesn't exist
+    output_dir = 'weather_data'
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Generate timestamp string if not provided
+    if timestamp is None:
+        timestamp = datetime.now(timezone.utc)
+        
+    # Format timestamp as string
+    timestamp_str = timestamp.strftime('%Y%m%d_%H%M%S')
+    
+    # Generate filename with timestamp
+    filename = f"{output_dir}/{station_id}_{timestamp_str}.csv"
+    
+    return filename

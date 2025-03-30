@@ -5,7 +5,7 @@ Provides functionality to retrieve weather data from all stations in the area.
 
 import requests
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from tqdm import tqdm
@@ -72,11 +72,11 @@ def get_ann_arbor_weather_data(days_history=7, output_file='data/ann_arbor_weath
 
     # If no existing data file or error reading it, use days_history
     if start_date is None:
-        end_date = datetime.now()
+        end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(days=days_history)
         print(f"Starting new data collection from: {start_date}")
     else:
-        end_date = datetime.now()
+        end_date = datetime.now(timezone.utc)
 
     # Format dates for API requests
     start_date_str = start_date.strftime("%Y-%m-%dT%H:%M:%SZ")

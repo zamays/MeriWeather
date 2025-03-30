@@ -7,17 +7,26 @@ import requests
 import pandas as pd
 from datetime import datetime, timedelta
 import json
+import os
 from tqdm import tqdm
 
 
-def get_ann_arbor_weather_data(days_history=7):
+def get_ann_arbor_weather_data(days_history=7, output_file='data/ann_arbor_weather_data.parquet'):
     """
     Pull weather data from all weather stations in the Ann Arbor, MI area.
+
+    If an existing output file is found, data collection will start from
+    the last recorded timestamp in that file.
 
     Parameters:
     -----------
     days_history : int, optional
         Number of days of historical data to retrieve (default is 7)
+        Only used if no existing data file is found
+
+    output_file : str, optional
+        Path to the output parquet file (default is 'data/ann_arbor_weather_data.parquet')
+        Used to check for existing data
 
     Returns:
     --------
@@ -25,6 +34,61 @@ def get_ann_arbor_weather_data(days_history=7):
     """
     # Ann Arbor coordinates (approximate center)
     lat, lon = 42.2808, -83.7430
+
+    # Check for existing data file and determine start date
+    start_date = None
+    existing_data = {}
+    existing_stations = set()
+
+    if os.path.exists(output_file):
+        try:
+            print(f"Found existing data file: {output_file}")
+            existing_df = pd.read_parquet(output_file)
+
+            if not existing_df.empty and 'timestamp' in existing_df.columns:
+                # Convert timestamp strings to datetime objects
+                existing_df['timestamp_dt'] = pd.to_datetime(existing_df['timestamp'])
+
+                # Get the latest timestamp
+                latest_timestamp = existing_df['timestamp_dt'].max()
+
+                # Use the latest timestamp as our start date
+                # Add a small buffer (1 hour) to avoid duplicates
+                start_date = latest_timestamp + timedelta(hours=1)
+
+                print(f"Continuing data collection from: {start_date}")
+
+                # Store station IDs for reference
+                if 'station_id' in existing_df.columns:
+                    existing_stations = set(existing_df['station_id'].unique())
+                    print(f"Found {len(existing_stations)} existing stations in data file")
+
+                # Keep the existing data for merging later
+                existing_data = existing_df
+        except Exception as e:
+            print(f"Error reading existing data file: {e}")
+            print("Starting fresh data collection")
+            start_date = None
+
+    # If no existing data file or error reading it, use days_history
+    if start_date is None:
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days_history)
+        print(f"Starting new data collection from: {start_date}")
+    else:
+        end_date = datetime.now()
+
+    # Format dates for API requests
+    start_date_str = start_date.strftime("%Y-%m-%dT%H:%M:%SZ")
+    end_date_str = end_date.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Calculate how many days we're requesting for user information
+    days_requested = (end_date - start_date).days
+    if days_requested < 1:
+        days_requested = f"{(end_date - start_date).total_seconds() / 3600:.1f} hours"
+    else:
+        days_requested = f"{days_requested} days"
+    print(f"Requesting {days_requested} of weather data")
 
     # Step 1: Find all weather stations around Ann Arbor
     # The NWS API uses grid points rather than direct lat/lon queries
@@ -48,11 +112,6 @@ def get_ann_arbor_weather_data(days_history=7):
         stations = stations_data['features']
 
         # Step 3: For each station, pull the latest observations and historical data
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=days_history)
-        start_date_str = start_date.strftime("%Y-%m-%dT%H:%M:%SZ")
-        end_date_str = end_date.strftime("%Y-%m-%dT%H:%M:%SZ")
-
         all_station_data = {}
 
         # Add a progress bar for station processing
@@ -82,9 +141,9 @@ def get_ann_arbor_weather_data(days_history=7):
                 # Optional inner progress bar for processing observations (hidden by default)
                 # Set disable=False to show this nested progress bar
                 for obs in tqdm(obs_data['features'],
-                                desc=f"Processing {station_id} observations",
-                                leave=False,
-                                disable=True):
+                               desc=f"Processing {station_id} observations",
+                               leave=False,
+                               disable=True):
                     properties = obs['properties']
 
                     # Extract basic weather info
@@ -115,7 +174,7 @@ def get_ann_arbor_weather_data(days_history=7):
                     # Convert temperature from C to F
                     if 'temperature_celsius' in df.columns:
                         df['temperature_fahrenheit'] = df['temperature_celsius'].apply(
-                            lambda x: (x * 9 / 5) + 32 if pd.notnull(x) else None
+                            lambda x: (x * 9/5) + 32 if pd.notnull(x) else None
                         )
 
                     all_station_data[station_id] = {
@@ -125,14 +184,84 @@ def get_ann_arbor_weather_data(days_history=7):
                         'data': df
                     }
                 else:
-                    print(f"No observation data available for station {station_id}")
+                    print(f"No new observation data available for station {station_id}")
 
             except requests.exceptions.HTTPError as e:
                 print(f"Error retrieving data for station {station_id}: {e}")
                 continue
 
-        return all_station_data
+        return all_station_data, existing_data
 
     except requests.exceptions.RequestException as e:
         print(f"Error during API request: {e}")
-        return {}
+        return {}, existing_data
+
+
+def merge_with_existing_data(new_station_data, existing_data):
+    """
+    Merge newly collected station data with existing data.
+
+    Parameters:
+    -----------
+    new_station_data : dict
+        Dictionary of newly collected station data
+    existing_data : DataFrame or dict
+        Existing data as a DataFrame or empty dict
+
+    Returns:
+    --------
+    DataFrame : Combined data frame with old and new data
+    """
+    # Create a list to hold all dataframes
+    all_dfs = []
+
+    # Process new station data
+    for station_id, station_info in tqdm(new_station_data.items(),
+                                       desc="Preparing new data for export",
+                                       unit="station"):
+        data_count = len(station_info['data']) if 'data' in station_info else 0
+        print(f"  - {station_info['name']} ({station_id}): {data_count} new observations")
+
+        # Add dataframe to the list of all dataframes, with station information added
+        if data_count > 0:
+            df = station_info['data'].copy()
+
+            # Add station information as columns
+            df['station_id'] = station_id
+            df['station_name'] = station_info['name']
+            df['station_latitude'] = station_info['latitude']
+            df['station_longitude'] = station_info['longitude']
+
+            all_dfs.append(df)
+
+    # Combine all new dataframes
+    if all_dfs:
+        new_df = pd.concat(all_dfs, ignore_index=True)
+
+        # If we have existing data, merge with new data
+        if isinstance(existing_data, pd.DataFrame) and not existing_data.empty:
+            # Remove timestamp_dt column if it exists (we added it temporarily)
+            if 'timestamp_dt' in existing_data.columns:
+                existing_data = existing_data.drop(columns=['timestamp_dt'])
+
+            # Combine existing and new data
+            combined_df = pd.concat([existing_data, new_df], ignore_index=True)
+
+            # Drop duplicates based on station_id and timestamp
+            combined_df = combined_df.drop_duplicates(subset=['station_id', 'timestamp'], keep='last')
+
+            print(f"Added {len(new_df)} new observations to {len(existing_data)} existing observations")
+            print(f"After removing duplicates: {len(combined_df)} total observations")
+
+            return combined_df
+        else:
+            return new_df
+    elif isinstance(existing_data, pd.DataFrame) and not existing_data.empty:
+        # If no new data but we have existing data, return existing data
+        # Remove timestamp_dt column if it exists
+        if 'timestamp_dt' in existing_data.columns:
+            existing_data = existing_data.drop(columns=['timestamp_dt'])
+        return existing_data
+    else:
+        # No data at all
+        return pd.DataFrame()

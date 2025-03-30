@@ -2,6 +2,9 @@
 Main script for collecting and processing weather data from Ann Arbor, MI.
 This script uses the weather_data_collector module to retrieve data from the NWS API
 and saves it to a parquet file with snappy compression.
+
+It includes incremental collection capability, which means it will check for existing
+data and only collect new data since the last collection.
 """
 
 import os
@@ -9,8 +12,8 @@ import argparse
 from tqdm import tqdm
 import pandas as pd
 
-# Import the weather data collector function
-from weather_data_collector import get_ann_arbor_weather_data
+# Import the weather data collector functions
+from weather_data_collector import get_ann_arbor_weather_data, merge_with_existing_data
 
 
 def main():
@@ -20,58 +23,47 @@ def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Collect weather data from Ann Arbor, MI area')
     parser.add_argument('--days', type=int, default=7,
-                        help='Number of days of historical data to retrieve (default: 7)')
-    parser.add_argument('--output', type=str, default='ann_arbor_weather_data.parquet',
-                        help='Output filename (default: ann_arbor_weather_data.parquet)')
+                        help='Number of days of historical data to retrieve (default: 7, only used for new collections)')
+    parser.add_argument('--output', type=str, default='data/ann_arbor_weather_data.parquet',
+                        help='Output filename (default: data/ann_arbor_weather_data.parquet)')
+    parser.add_argument('--force-new', action='store_true',
+                        help='Force new data collection ignoring existing data')
 
     args = parser.parse_args()
 
-    print(f"Collecting weather data for the past {args.days} days from Ann Arbor, MI area...")
+    print(f"Weather Data Collection Tool for Ann Arbor, MI")
+    print(f"{'=' * 50}")
 
-    # Get weather data for the specified number of days
-    weather_data = get_ann_arbor_weather_data(days_history=args.days)
+    # Check if we're forcing a new collection
+    if args.force_new and os.path.exists(args.output):
+        print(f"Forcing new collection. Ignoring existing data in {args.output}")
+        # Optionally, create backup of existing file
+        backup_file = f"{args.output}.backup"
+        print(f"Creating backup of existing data: {backup_file}")
+        os.rename(args.output, backup_file)
 
-    # Print summary information
-    print(f"\nRetrieved data from {len(weather_data)} weather stations in the Ann Arbor area:")
+    # Get weather data, taking into account existing data
+    new_station_data, existing_data = get_ann_arbor_weather_data(
+        days_history=args.days,
+        output_file=args.output if not args.force_new else None
+    )
 
-    # Create a list to hold all dataframes
-    all_dfs = []
+    # Merge the new data with any existing data
+    combined_df = merge_with_existing_data(new_station_data, existing_data)
 
-    # Add progress bar for preparing data for export
-    for station_id, station_info in tqdm(weather_data.items(),
-                                         desc="Preparing data for export",
-                                         unit="station"):
-        data_count = len(station_info['data']) if 'data' in station_info else 0
-        print(f"  - {station_info['name']} ({station_id}): {data_count} observations")
-
-        # Add dataframe to the list of all dataframes, with station information added
-        if data_count > 0:
-            df = station_info['data'].copy()
-
-            # Add station information as columns
-            df['station_id'] = station_id
-            df['station_name'] = station_info['name']
-            df['station_latitude'] = station_info['latitude']
-            df['station_longitude'] = station_info['longitude']
-
-            all_dfs.append(df)
-
-    # Combine all dataframes into one
-    if all_dfs:
-        combined_df = pd.concat(all_dfs, ignore_index=True)
-
+    # Save the combined data
+    if not combined_df.empty:
         # Save to parquet file with snappy compression
-        output_file = args.output
-        combined_df.to_parquet(output_file, compression='snappy')
+        combined_df.to_parquet(args.output, compression='snappy')
 
         # Get file size for reporting
-        file_size_mb = os.path.getsize(output_file) / (1024 * 1024)
+        file_size_mb = os.path.getsize(args.output) / (1024 * 1024)
 
-        print(f"\nAll data saved to {output_file}")
+        print(f"\nAll data saved to {args.output}")
         print(f"Total observations: {len(combined_df)}")
         print(f"File size: {file_size_mb:.2f} MB")
     else:
-        print("\nNo data was collected from any station.")
+        print("\nNo data was collected or found.")
 
 
 if __name__ == "__main__":
